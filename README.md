@@ -1,37 +1,25 @@
-# MPI Sample Sort (Point-to-Point Implementation)
+# Parallel Sample Sort with MPI
 
-This repository contains an implementation of the **Sample Sort algorithm** using **MPI (Message Passing Interface)**.  
-The implementation uses **only point-to-point communication primitives** (`MPI_Send`, `MPI_Recv`, `MPI_Isend`, `MPI_Irecv`) and avoids all collective operations (`MPI_Bcast`, `MPI_Scatterv`, `MPI_Alltoallv`, etc.) as required by the assignment.
+## 📖 Overview
+This repository implements the **Sample Sort algorithm** in C++ using the **Message Passing Interface (MPI)**.  
+Two variants of the algorithm are included:  
 
----
+1. **Point-to-Point Communication** (`samplempipp.cpp`) – uses only `MPI_Send` and `MPI_Recv` for sample gathering, pivot distribution, and bucket exchange.  
+2. **Collective Communication** (`samplempi.cpp`) – uses collective operations such as `MPI_Gather`, `MPI_Bcast`, and `MPI_Alltoallv`.  
 
-##  Features
-- Parallel sorting of large integer arrays across multiple MPI processes.
-- **Point-to-point data distribution** (no `MPI_Scatter`).
-- **Sample selection and pivoting** for balanced partitioning.
-- **All-to-all bucket exchange** using only `MPI_Isend`/`MPI_Irecv`.
-- **Local k-way merge** of received buckets into a globally sorted sub-array.
-- Final **gather to root** and verification against a sequential sort.
-- Timing instrumentation for major phases:
-  - Distribution
-  - Local sort
-  - Pivot selection
-  - Size exchange
-  - Data exchange
-  - Merge
-  - Total runtime
+This project demonstrates the difference in complexity and efficiency between explicit point-to-point messaging and MPI collective communication.
 
 ---
 
-##  Requirements
-- C++11 or later
-- MPI implementation (e.g., [OpenMPI](https://www.open-mpi.org/) or MPICH)
+## 📂 Files
+- `samplempipp.cpp` → Point-to-point sample sort (exam requirement).  
+- `samplempi.cpp` → Collective-based sample sort (for comparison).  
 
 ---
 
-##  Build Instructions
-
-Compile with:
+## ⚙️ Build Instructions
+Compile both versions with `mpic++`:
 
 ```bash
-mpic++ -O3 -std=c++11 -o sample_sort sample_sort_mpi.cpp
+mpic++ -O3 -std=c++11 -o samplempi samplempi.cpp
+mpic++ -O3 -std=c++11 -o samplempipp samplempipp.cpp
