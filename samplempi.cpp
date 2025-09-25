@@ -1,63 +1,14 @@
+#include <mpi.h>
 #include <iostream>
 #include <vector>
 #include <algorithm>
-#include <mpi.h>
+#include <cstdlib>
+#include <ctime>
 
-// Function to generate random integers
-void generate_random_data(std::vector<int>& data, int num_elements) {
-    for (int i = 0; i < num_elements; i++) {
-        data[i] = rand() % 10000;
-    }
-}
-
-// Function to merge two sorted vectors into one
-std::vector<int> merge(const std::vector<int>& left, const std::vector<int>& right) {
-    std::vector<int> result(left.size() + right.size());
-    int i = 0, j = 0, k = 0;
-
-    while (i < left.size() && j < right.size()) {
-        if (left[i] < right[j]) {
-            result[k++] = left[i++];
-        } else {
-            result[k++] = right[j++];
-        }
-    }
-
-    while (i < left.size()) {
-        result[k++] = left[i++];
-    }
-    
-    while (j < right.size()) {
-        result[k++] = right[j++];
-    }
-    
-    return result;
-}
-
-// Sample Sort Function
-void sample_sort(int rank, int size, std::vector<int>& local_data, int num_elements) {
-    int local_size = num_elements / size;
-
-    // Local sorting
-    std::sort(local_data.begin(), local_data.end());
-
-    // Send and receive data using MPI_Send and MPI_Recv for merging
-    std::vector<int> sorted_data;
-    if (rank == 0) {
-        sorted_data = local_data;
-        for (int i = 1; i < size; i++) {
-            std::vector<int> received_data(local_size);
-            MPI_Recv(received_data.data(), local_size, MPI_INT, i, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-            sorted_data = merge(sorted_data, received_data);
-        }
-        /*std::cout << "Sorted data by root: ";
-        for (int i = 0; i < sorted_data.size(); i++) {
-            std::cout << sorted_data[i] << " ";
-        }
-        std::cout << std::endl;*/
-        std::cout<<"Sorted\n";
-    } else {
-        MPI_Send(local_data.data(), local_size, MPI_INT, 0, 0, MPI_COMM_WORLD);
+// Generate random data for local process
+void generate_local_data(std::vector<int>& data, long local_n) {
+    for (long i = 0; i < local_n; i++) {
+        data[i] = rand() % 1000000; // values up to 1M
     }
 }
 
@@ -68,27 +19,115 @@ int main(int argc, char** argv) {
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    long num_elements = 10000000000;
-    std::vector<int> data(num_elements);
+    // Step 0: Get total array size from command line
+    long total_N = 1000000; // default total array size
+    if (argc > 1) total_N = atol(argv[1]);
 
-    if (rank == 0) {
-        generate_random_data(data, num_elements);
-        /*std::cout << "Initial unsorted data: ";
-        for (int i = 0; i < num_elements; i++) {
-            std::cout << data[i] << " ";
-        }
-        std::cout << std::endl;*/
+    // Step 1: Calculate local chunk size for each process
+    long base_chunk = total_N / size;
+    long remainder = total_N % size;
+    long local_n = base_chunk + (rank < remainder ? 1 : 0); // distribute remainder
+
+    // Seed random differently per process
+    srand(time(NULL) + rank * 100);
+
+    // Step 2: Each process generates its local array
+    std::vector<int> local_data(local_n);
+    generate_local_data(local_data, local_n);
+
+    if(rank==0) std::cout << "All processes generated local arrays.\n";
+
+    MPI_Barrier(MPI_COMM_WORLD); // sync before timing
+    double start_time = MPI_Wtime();
+
+    // Step 3: Local sort
+    std::sort(local_data.begin(), local_data.end());
+    if(rank==0) std::cout << "Local sort done.\n";
+
+    // Step 4: Pick local samples
+    int s = size - 1; // number of samples per process
+    std::vector<int> local_samples(s);
+    for (int i = 0; i < s; i++) {
+        long pos = (i+1) * local_n / size;
+        if(pos >= local_n) pos = local_n - 1;
+        local_samples[i] = local_data[pos];
     }
 
-    // Scatter the data to all processes
-    int local_size = num_elements / size;
-    std::vector<int> local_data(local_size);
-    MPI_Scatter(data.data(), local_size, MPI_INT, local_data.data(), local_size, MPI_INT, 0, MPI_COMM_WORLD);
+    // Step 5: Gather samples at root to compute pivots
+    std::vector<int> gathered_samples;
+    if(rank == 0) gathered_samples.resize(s * size);
+    MPI_Gather(local_samples.data(), s, MPI_INT,
+               gathered_samples.data(), s, MPI_INT,
+               0, MPI_COMM_WORLD);
 
-    // Sort the local data and merge using sample sort
-    sample_sort(rank, size, local_data, num_elements);
+    // Step 6: Root chooses pivots
+    std::vector<int> pivots(size-1);
+    if(rank == 0) {
+        std::sort(gathered_samples.begin(), gathered_samples.end());
+        for(int i = 0; i < size-1; i++) {
+            pivots[i] = gathered_samples[(i+1)*size - 1];
+        }
+        std::cout << "Pivots selected and broadcast.\n";
+    }
+
+    // Broadcast pivots to all processes
+    MPI_Bcast(pivots.data(), size-1, MPI_INT, 0, MPI_COMM_WORLD);
+
+    // Step 7: Partition local data based on pivots using same buffer
+    std::vector<std::vector<int>> buckets(size);
+    int idx = 0;
+    for(auto val : local_data) {
+        while(idx < size-1 && val > pivots[idx]) idx++;
+        buckets[idx].push_back(val);
+    }
+
+    if(rank==0) std::cout << "Partitioning done.\n";
+
+    // Step 8: Exchange buckets among processes
+    std::vector<int> send_counts(size), recv_counts(size);
+    for(int i=0; i<size; i++) send_counts[i] = buckets[i].size();
+
+    MPI_Alltoall(send_counts.data(), 1, MPI_INT,
+                 recv_counts.data(), 1, MPI_INT,
+                 MPI_COMM_WORLD);
+
+    std::vector<int> sdispls(size), rdispls(size);
+    int send_total=0, recv_total=0;
+    for(int i=0; i<size; i++) {
+        sdispls[i] = send_total;
+        rdispls[i] = recv_total;
+        send_total += send_counts[i];
+        recv_total += recv_counts[i];
+    }
+
+    std::vector<int> send_buf(send_total);
+    int pos=0;
+    for(int i=0; i<size; i++) {
+        std::copy(buckets[i].begin(), buckets[i].end(), send_buf.begin()+pos);
+        pos += buckets[i].size();
+        buckets[i].clear(); // free memory
+    }
+
+    std::vector<int> recv_buf(recv_total);
+    MPI_Alltoallv(send_buf.data(), send_counts.data(), sdispls.data(), MPI_INT,
+                  recv_buf.data(), recv_counts.data(), rdispls.data(), MPI_INT,
+                  MPI_COMM_WORLD);
+
+    if(rank==0) std::cout << "Redistribution done.\n";
+
+    // Step 9: Final local sort
+    std::sort(recv_buf.begin(), recv_buf.end());
+
+    MPI_Barrier(MPI_COMM_WORLD); // sync before stopping timer
+    double end_time = MPI_Wtime();
+
+    if(rank == 0) {
+        std::cout << "Final local sort done.\n";
+        std::cout << "Memory-efficient sample sort finished.\n";
+        std::cout << "Total array size = " << total_N << std::endl;
+        std::cout << "Elapsed time (seconds) = " << (end_time - start_time) << std::endl;
+    }
 
     MPI_Finalize();
     return 0;
 }
-
